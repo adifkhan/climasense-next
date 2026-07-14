@@ -1,0 +1,23 @@
+{
+  "name": "climasense-next",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A weather dashboard built on the WeatherAI API — AI summaries, auto IP location, 7-day forecast. Next.js App Router + API routes.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "^14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.9",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.5.3"
+  }
+}
