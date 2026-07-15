@@ -1,14 +1,19 @@
+export type Units = "metric" | "imperial";
+
+export interface City {
+  name: string;
+  lat: number;
+  lon: number;
+}
+
 export interface CurrentConditions {
-  temp?: number;
+  time: string;
   temperature?: number;
-  feels_like?: number;
-  feelsLike?: number;
+  windspeed?: number;
+  winddirection: number;
+  weathercode: number;
   condition?: string;
-  summary?: string;
-  description?: string;
   humidity?: number;
-  wind_speed?: number;
-  windSpeed?: number;
 }
 
 export interface ForecastDay {
@@ -28,24 +33,14 @@ export interface WeatherResponse {
   forecast?: ForecastDay[];
   daily?: ForecastDay[];
   ai_summary?: string;
-  summary?: string;
-  temp?: number;
   temperature?: number;
   condition?: string;
 }
 
-export interface GeoResponse {
-  ip?: string;
-  geo?: {
-    lat?: number;
-    lon?: number;
-    city?: string;
-    region?: string;
-    country?: string;
-    timezone?: string;
-  };
-  lat?: number;
-  lon?: number;
+export interface GeoHeaders {
+  country?: string;
+  region?: string;
+  city?: string;
 }
 
 export interface UsageResponse {
