@@ -28,6 +28,7 @@ export default async function Page() {
         .join(", ") || undefined
     : undefined;
 
+  console.log(clientIp, geoParams, result);
   return (
     <Dashboard
       initialLat={FALLBACK_COORDS.lat}
