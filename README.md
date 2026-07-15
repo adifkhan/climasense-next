@@ -4,7 +4,7 @@ A weather dashboard built on the [WeatherAI API](https://weather-ai.co/docs) —
 
 Built with Next.js 14 (App Router), React, and TypeScript.
 
-**Live demo:** _add your deployed URL here_
+**Live demo:** [click here](https://climasense-next.vercel.app/)
 **API endpoints used:** `GET /v1/weather`, `GET /v1/weather-geo`, `GET /v1/usage`
 
 ---
@@ -15,13 +15,13 @@ Built with Next.js 14 (App Router), React, and TypeScript.
 
 `app/page.tsx` is an **async Server Component** — it calls WeatherAI directly during server rendering (using the real visitor IP, see below) and hands the result to `components/Dashboard.tsx`, a client component that takes over for all interactivity after hydration.
 
-This means the very first render already has real data in the HTML: no mount → `useEffect` → fetch → re-render waterfall, no loading spinner on first paint. Everything *after* that first paint (search, city chips, unit toggle) still goes through the same-origin routes in `app/api/**`, exactly like before — the Server Component only optimizes the initial load.
+This means the very first render already has real data in the HTML: no mount → `useEffect` → fetch → re-render waterfall, no loading spinner on first paint. Everything _after_ that first paint (search, city chips, unit toggle) still goes through the same-origin routes in `app/api/**`, exactly like before — the Server Component only optimizes the initial load.
 
 Reading `headers()` (via `lib/getClientIp.ts`) makes this page dynamic automatically, which is correct: the response genuinely depends on the visitor's IP, so it shouldn't be statically cached.
 
 ### A real bug this surfaced: IP auto-detection was broken
 
-`/v1/weather-geo?ip=auto` detects location from whoever is *making the HTTP request to WeatherAI*. Since the browser never calls WeatherAI directly (that would expose the API key), it's always **our own server** making that call — so a naive `ip=auto` forwarded straight from the client would have WeatherAI geolocate our hosting infrastructure, not the visitor.
+`/v1/weather-geo?ip=auto` detects location from whoever is _making the HTTP request to WeatherAI_. Since the browser never calls WeatherAI directly (that would expose the API key), it's always **our own server** making that call — so a naive `ip=auto` forwarded straight from the client would have WeatherAI geolocate our hosting infrastructure, not the visitor.
 
 Fix: `lib/getClientIp.ts` reads the real visitor IP from `x-forwarded-for` (set by Vercel, Render, Netlify, and virtually every reverse proxy) and the API routes pass that explicit IP instead of a bare `"auto"`.
 
@@ -48,11 +48,12 @@ Two things pushed this:
 1. `/v1/weather-geo` doesn't accept a `units` param at all (only `ip`, `lat`, `lon`, `days`, `ai` — checked against the docs). So IP-detected weather is always metric regardless of what the user has selected, unless something converts it.
 2. Free tier is capped at 1,000 requests/month. Re-fetching from WeatherAI every time someone flips the °C/°F toggle spends real quota on something that's just arithmetic.
 
-So: **the app always requests metric from WeatherAI**, and `lib/unitConversion.ts` + `lib/deriveWeatherView.ts` convert to imperial for display. Toggling units is now instant and free — no network call, works identically whether the data came from a manual search or IP auto-detect. One caveat: the AI-generated summary *text* is written in metric by WeatherAI and isn't re-translated — only the numeric fields are converted. That's noted right next to where it's rendered.
+So: **the app always requests metric from WeatherAI**, and `lib/unitConversion.ts` + `lib/deriveWeatherView.ts` convert to imperial for display. Toggling units is now instant and free — no network call, works identically whether the data came from a manual search or IP auto-detect. One caveat: the AI-generated summary _text_ is written in metric by WeatherAI and isn't re-translated — only the numeric fields are converted. That's noted right next to where it's rendered.
 
 ### Location labeling
 
 `/v1/weather-geo`'s docs say it "returns weather + geo metadata in **response headers**" — `X-City` / `X-Region` / `X-Country` — not coordinates in the body. So:
+
 - **IP auto-detect** → location label comes from those headers (`geoLabel` state in `Dashboard.tsx`)
 - **Manual search / city chip** → location label falls back to formatted lat/lon (since we have real coordinates there)
 
@@ -62,14 +63,14 @@ So: **the app always requests metric from WeatherAI**, and `lib/unitConversion.t
 
 `lib/errors.ts` maps WeatherAI's documented status codes to a consistent shape (`{ status, message, retryable, retryAfterSeconds? }`):
 
-| Status | Handling |
-| --- | --- |
-| 400 | Surfaced as-is — shouldn't happen since the frontend validates lat/lon first |
-| 401 | Shown as a configuration issue, not something the user can act on |
-| 403 | Plan-limitation message (e.g. a Free-tier key hitting a Pro+ endpoint) |
-| 429 | `X-RateLimit-Reset` is parsed into a live countdown ("resets in 4m"), shown in `StatusBanner` |
-| 500 | `lib/weatherClient.ts` retries with exponential backoff (2 retries, 300ms/600ms) **before** this ever reaches the client — matches the docs' explicit guidance |
-| 503 | Surfaced as "temporarily unavailable, try again shortly" |
+| Status | Handling                                                                                                                                                       |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400    | Surfaced as-is — shouldn't happen since the frontend validates lat/lon first                                                                                   |
+| 401    | Shown as a configuration issue, not something the user can act on                                                                                              |
+| 403    | Plan-limitation message (e.g. a Free-tier key hitting a Pro+ endpoint)                                                                                         |
+| 429    | `X-RateLimit-Reset` is parsed into a live countdown ("resets in 4m"), shown in `StatusBanner`                                                                  |
+| 500    | `lib/weatherClient.ts` retries with exponential backoff (2 retries, 300ms/600ms) **before** this ever reaches the client — matches the docs' explicit guidance |
+| 503    | Surfaced as "temporarily unavailable, try again shortly"                                                                                                       |
 
 On any error, the UI **doesn't blank out existing data** — if you already have weather showing and a background refresh fails, you keep seeing the last known-good result underneath the error banner, with a Retry button.
 
@@ -99,6 +100,7 @@ Visit `http://localhost:3000`. Note: on localhost there's no real `x-forwarded-f
 ## Deploying
 
 **Vercel** (built by the Next.js team, zero-config for this):
+
 1. Push to GitHub, import at [vercel.com/new](https://vercel.com/new)
 2. Add env var `WEATHERAI_API_KEY`
 3. Deploy
