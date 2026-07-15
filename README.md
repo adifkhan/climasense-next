@@ -2,19 +2,76 @@
 
 A weather dashboard built on the [WeatherAI API](https://weather-ai.co/docs) — current conditions, an AI-generated summary, and a 7-day forecast, with IP-based auto location and a live "instrument gauge" for temperature.
 
-Built with Next.js 14 (App Router), React, and TypeScript. No separate backend — Next.js Route Handlers act as the API proxy.
+Built with Next.js 14 (App Router), React, and TypeScript.
 
-**API docs used:** `GET /v1/weather`, `GET /v1/weather-geo`, `GET /v1/usage`
+**Live demo:** _add your deployed URL here_
+**API endpoints used:** `GET /v1/weather`, `GET /v1/weather-geo`, `GET /v1/usage`
 
 ---
 
-## Why it's built this way
+## Architecture
 
-The API key has to stay server-side — shipping it in client JS means anyone can open dev tools and steal it. Next.js makes this straightforward: anything under `app/api/**/route.ts` runs only on the server, and `process.env.WEATHERAI_API_KEY` (no `NEXT_PUBLIC_` prefix) is never bundled into client code.
+### Server-rendered first paint
 
-`app/page.tsx` is a client component that only ever calls same-origin routes (`/api/weather`, `/api/geo`, `/api/usage`). Those routes proxy to WeatherAI and attach the real key, so the browser never sees it.
+`app/page.tsx` is an **async Server Component** — it calls WeatherAI directly during server rendering (using the real visitor IP, see below) and hands the result to `components/Dashboard.tsx`, a client component that takes over for all interactivity after hydration.
 
-Each route also checks a small in-memory cache (5-minute TTL) before calling WeatherAI, since the Free tier caps out at 1,000 requests/month and repeated refreshes of the same location shouldn't burn quota. See [Scaling notes](#scaling-notes) for the real caveat with this approach on serverless hosts.
+This means the very first render already has real data in the HTML: no mount → `useEffect` → fetch → re-render waterfall, no loading spinner on first paint. Everything *after* that first paint (search, city chips, unit toggle) still goes through the same-origin routes in `app/api/**`, exactly like before — the Server Component only optimizes the initial load.
+
+Reading `headers()` (via `lib/getClientIp.ts`) makes this page dynamic automatically, which is correct: the response genuinely depends on the visitor's IP, so it shouldn't be statically cached.
+
+### A real bug this surfaced: IP auto-detection was broken
+
+`/v1/weather-geo?ip=auto` detects location from whoever is *making the HTTP request to WeatherAI*. Since the browser never calls WeatherAI directly (that would expose the API key), it's always **our own server** making that call — so a naive `ip=auto` forwarded straight from the client would have WeatherAI geolocate our hosting infrastructure, not the visitor.
+
+Fix: `lib/getClientIp.ts` reads the real visitor IP from `x-forwarded-for` (set by Vercel, Render, Netlify, and virtually every reverse proxy) and the API routes pass that explicit IP instead of a bare `"auto"`.
+
+### Component split
+
+```
+components/
+├── Dashboard.tsx              # client component — owns all state/interactivity
+├── SearchControls.tsx         # lat/lon form, locate button, city chips, unit toggle
+├── CurrentConditionsCard.tsx  # presentational — temp, gauge, feels-like/humidity/wind
+├── Gauge.tsx                  # SVG temperature dial
+├── AISummaryCard.tsx          # presentational
+├── ForecastStrip.tsx          # presentational — 7 forecast cards
+├── StatusBanner.tsx           # error/status messages, rate-limit countdown, retry button
+└── UsageFooter.tsx            # presentational
+```
+
+Everything except `Dashboard.tsx` is a small, presentational component that just renders props — easy to read in isolation, easy to reuse or test. `Dashboard.tsx` is the only place that owns fetch logic and state.
+
+### A design change worth explaining: units are converted client-side, not re-fetched
+
+Two things pushed this:
+
+1. `/v1/weather-geo` doesn't accept a `units` param at all (only `ip`, `lat`, `lon`, `days`, `ai` — checked against the docs). So IP-detected weather is always metric regardless of what the user has selected, unless something converts it.
+2. Free tier is capped at 1,000 requests/month. Re-fetching from WeatherAI every time someone flips the °C/°F toggle spends real quota on something that's just arithmetic.
+
+So: **the app always requests metric from WeatherAI**, and `lib/unitConversion.ts` + `lib/deriveWeatherView.ts` convert to imperial for display. Toggling units is now instant and free — no network call, works identically whether the data came from a manual search or IP auto-detect. One caveat: the AI-generated summary *text* is written in metric by WeatherAI and isn't re-translated — only the numeric fields are converted. That's noted right next to where it's rendered.
+
+### Location labeling
+
+`/v1/weather-geo`'s docs say it "returns weather + geo metadata in **response headers**" — `X-City` / `X-Region` / `X-Country` — not coordinates in the body. So:
+- **IP auto-detect** → location label comes from those headers (`geoLabel` state in `Dashboard.tsx`)
+- **Manual search / city chip** → location label falls back to formatted lat/lon (since we have real coordinates there)
+
+`geoLabel` is cleared as soon as the user searches or picks a city, so the two labeling sources never fight each other.
+
+### Error handling
+
+`lib/errors.ts` maps WeatherAI's documented status codes to a consistent shape (`{ status, message, retryable, retryAfterSeconds? }`):
+
+| Status | Handling |
+| --- | --- |
+| 400 | Surfaced as-is — shouldn't happen since the frontend validates lat/lon first |
+| 401 | Shown as a configuration issue, not something the user can act on |
+| 403 | Plan-limitation message (e.g. a Free-tier key hitting a Pro+ endpoint) |
+| 429 | `X-RateLimit-Reset` is parsed into a live countdown ("resets in 4m"), shown in `StatusBanner` |
+| 500 | `lib/weatherClient.ts` retries with exponential backoff (2 retries, 300ms/600ms) **before** this ever reaches the client — matches the docs' explicit guidance |
+| 503 | Surfaced as "temporarily unavailable, try again shortly" |
+
+On any error, the UI **doesn't blank out existing data** — if you already have weather showing and a background refresh fails, you keep seeing the last known-good result underneath the error banner, with a Retry button.
 
 ## Setup
 
@@ -27,71 +84,64 @@ npm install
 cp .env.example .env.local
 ```
 
-Open `.env.local` and add your API key:
+Add your key to `.env.local`:
 
 ```
 WEATHERAI_API_KEY=wai_your_key_here
 ```
 
-Run it:
-
 ```bash
 npm run dev
 ```
 
-Visit `http://localhost:3000`.
+Visit `http://localhost:3000`. Note: on localhost there's no real `x-forwarded-for` header, so IP auto-detection will fall back to WeatherAI's own `ip=auto` behavior (which, in dev, means it'll detect wherever your dev machine's outbound connection appears to originate from) — this is expected and only matters once deployed behind a real proxy.
 
 ## Deploying
 
-**Vercel** (built by the same team as Next.js, zero-config for this kind of app):
+**Vercel** (built by the Next.js team, zero-config for this):
+1. Push to GitHub, import at [vercel.com/new](https://vercel.com/new)
+2. Add env var `WEATHERAI_API_KEY`
+3. Deploy
 
-1. Push this repo to GitHub
-2. [vercel.com/new](https://vercel.com/new) → import the repo
-3. Add an environment variable: `WEATHERAI_API_KEY = wai_your_key_here`
-4. Deploy
-
-**Render / Netlify** also both support Next.js directly:
-
-- Build command: `npm run build`
-- Start command: `npm start` (Render) — Netlify auto-detects Next.js and doesn't need this
-- Add the same `WEATHERAI_API_KEY` env var in the host's dashboard
+**Render / Netlify** also support Next.js directly — build command `npm run build`, start command `npm start` (Render only; Netlify auto-detects), same env var.
 
 ## Project structure
 
 ```
 climasense-next/
 ├── app/
-│   ├── layout.tsx          # root layout, fonts, metadata
-│   ├── page.tsx            # dashboard UI (client component)
-│   ├── globals.css         # design system (CSS variables, instrument-panel look)
+│   ├── layout.tsx
+│   ├── page.tsx              # Server Component — SSR initial fetch
+│   ├── globals.css
 │   └── api/
-│       ├── weather/route.ts   # proxies GET /v1/weather
-│       ├── geo/route.ts       # proxies GET /v1/weather-geo
-│       └── usage/route.ts     # proxies GET /v1/usage
-├── components/
-│   ├── Gauge.tsx            # SVG temperature gauge
-│   └── ForecastStrip.tsx    # 7-day forecast cards
+│       ├── weather/route.ts
+│       ├── geo/route.ts      # forwards real visitor IP, strips unsupported `units`
+│       └── usage/route.ts
+├── components/                # see "Component split" above
 ├── lib/
-│   ├── proxyWeatherAI.ts    # shared fetch + cache logic used by all 3 routes
-│   └── types.ts             # response types — deliberately loose, see below
+│   ├── weatherClient.ts      # shared fetch + cache + retry-on-500, used by SSR and routes
+│   ├── getClientIp.ts        # real visitor IP extraction
+│   ├── errors.ts             # status-code → user-facing message mapping
+│   ├── unitConversion.ts     # °C↔°F, km/h↔mph
+│   ├── deriveWeatherView.ts  # normalizes the loose response shape + applies conversion
+│   └── types.ts              # response types — deliberately loose, see below
 └── .env.example
 ```
 
 ## Known assumptions
 
-The docs page shows a full example response for `/v1/trees/analyze` but not for `/v1/weather` — its field names aren't spelled out. `lib/types.ts` and `app/page.tsx` read fields defensively (`cur.temp ?? cur.temperature`, `weather.forecast ?? weather.daily`, etc.) so the UI degrades gracefully instead of breaking outright if a guessed field name is wrong. Once you have live API access, log one real response and trim the unused fallback paths — they're there to survive a first real request, not because the shape is actually ambiguous.
+The docs show a full example response for `/v1/trees/analyze` but not for `/v1/weather` or `/v1/weather-geo` — field names for the actual weather payload aren't spelled out. `lib/types.ts` and `lib/deriveWeatherView.ts` read fields defensively (`cur.temp ?? cur.temperature`, etc.) so the UI degrades gracefully instead of breaking if a guessed field name is wrong. Once you have a real key, log one response and trim the unused fallback paths.
 
-**A note on testing:** I built and reviewed this without network access to `api.weather-ai.co` or the npm registry, so I couldn't run `npm install` / `next dev` / `next build` against it end-to-end. I checked it carefully by hand (types, JSX, hook dependencies) and fixed a few real issues that way, but budget 15–20 minutes after your first `npm install` to catch anything a compiler would have.
+**A note on testing:** built and reviewed without network access to `api.weather-ai.co` or the npm registry — I couldn't run `npm install` / `next dev` against this end-to-end. I checked it carefully by hand (types, prop shapes, hook dependencies, every import against its export) and fixed several real issues that way. Budget 15–20 minutes after your first `npm install` to catch anything a compiler would.
 
 ## Scaling notes
 
-- **Shared cache**: the in-memory cache in `lib/proxyWeatherAI.ts` lives inside each serverless function instance. On Vercel/Netlify that means cold starts reset it and concurrent instances don't share hits. Fine for a demo; swap in Redis (e.g. Upstash, which pairs naturally with Vercel) before this needs to hold up under real traffic.
-- **Respect `X-RateLimit-Reset`**: a 429 currently just surfaces as an error message. It should be parsed and shown as "try again in Xm", with the frontend backing off automatically.
-- **`ai=false` where it's not needed**: AI requests draw from a smaller, separate quota per the docs. A "just refresh the numbers" mode could skip `ai_summary` and only fetch it once per session.
-- **Debounce geolocation on load**: `autoLocate()` fires one `/v1/weather-geo` call per page load. At scale, detecting once and caching the result client-side (or in a cookie) would cut that down.
+- **Shared cache caveat**: `lib/weatherClient.ts`'s in-memory cache lives inside each serverless function instance — cold starts reset it, concurrent instances don't share hits. Fine for a demo; swap in Redis/Upstash before this needs to hold up under real traffic.
+- **`ai=false` where it's not needed**: AI requests draw from a smaller, separate quota per the docs. A "just refresh the numbers" mode could skip `ai_summary`.
+- **The units redesign above** is itself a quota-saving change — see that section.
 
 ## What I'd add next
 
-- City name search (the API only accepts lat/lon, so this needs a separate geocoding step)
+- City name search (the API only accepts lat/lon or IP, so this needs a separate geocoding step)
 - Webhook-based alerts (rain/wind/frost) via `POST /v1/webhooks`, for a Pro-tier account
-- Tests around the proxy's error handling (401/403/429 paths)
+- Tests around `lib/errors.ts` and `lib/deriveWeatherView.ts` — both are pure functions and cheap to unit test
